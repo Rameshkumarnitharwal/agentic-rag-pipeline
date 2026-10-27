@@ -1,0 +1,19 @@
+# Secrets — never commit (.env.example is the template)
+.env
+.env.*
+!.env.example
+
+# Environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Documents and generated artifacts (not redistributed; see DATA/README.md)
+DATA/*
+!DATA/README.md
+processed_data/
+qdrant_local/
+evals/results/
+*.log

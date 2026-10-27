@@ -1,0 +1,60 @@
+# API + chat UI + Redis (shared rate limiting). Eval demo is opt-in: `docker compose --profile evals up`.
+#
+#   cp .env.example .env            # fill in PORTKEY_API_KEY, JINA_API_KEY, QDRANT_URL, QDRANT_API_KEY
+#   docker compose build
+#   docker compose run --rm api python -m app.ingestion.pipeline        # parse DATA/ -> processed_data/
+#   docker compose run --rm api python -m app.services.retrieval.indexer
+#   docker compose up -d                                                 # API :8000, UI :8501
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    image: enterprise-rag:latest
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./DATA:/app/DATA:ro
+      - ./processed_data:/app/processed_data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ui:
+    image: enterprise-rag:latest
+    command: ["streamlit", "run", "ui/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+    env_file: .env
+    environment:
+      RAG_API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      disable: true  # the image healthcheck probes the API port
+    restart: unless-stopped
+
+  evals:
+    profiles: ["evals"]
+    image: enterprise-rag:latest
+    command: ["streamlit", "run", "evals/app.py", "--server.address=0.0.0.0", "--server.port=8502", "--server.headless=true"]
+    env_file: .env
+    ports:
+      - "8502:8502"
+    volumes:
+      - ./evals/results:/app/evals/results
+    healthcheck:
+      disable: true
