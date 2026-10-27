@@ -1,0 +1,8 @@
+# Copy to DATA/acl.yaml to restrict documents to groups (see app/acl.py).
+# API keys get groups via API_KEYS="key1:hr|managers,key2"; every caller can read "public".
+default: [public]
+rules:                                   # first match wins; globs are relative to DATA/
+  - match: "true_data/job_management.html"
+    groups: [data-platform]
+  - match: "true_data/hr/**"
+    groups: [hr, managers]

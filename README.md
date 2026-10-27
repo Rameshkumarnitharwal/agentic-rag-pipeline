@@ -17,8 +17,11 @@ semantic reranking, history-aware planning, and NeMo Guardrails for input and ou
 - **Observability:** nested traces in Pydantic Logfire and LangSmith across every node; Prometheus
   `/metrics`.
 - **Security:** optional bearer-token auth; Redis-backed or in-memory rate limiting.
-- **Evaluation:** RAGAS suite (6 metrics) plus True-vs-Noisy checks, with a Streamlit demo and a
-  headless `evals/run_evals.py`.
+- **Evaluation:** RAGAS suite (6 metrics), Recall/Precision/NDCG@K, cost per query and True-vs-Noisy
+  checks, with a Streamlit demo and a headless `evals/run_evals.py`.
+- **Production features** ([DOCS/PRODUCTION.md](DOCS/PRODUCTION.md)): document-level access control,
+  persistent memory (SQLite/Postgres), hybrid BM25 + dense search, OCR for scanned PDFs, PII redaction,
+  streaming answers, a 👍/👎 feedback loop, auto-ingestion from local/S3/Confluence, and Locust load tests.
 
 ## Quick start
 
@@ -42,14 +45,19 @@ first; see [DOCS/SETUP.md](DOCS/SETUP.md)).
 │   ├── gateway/            # Portkey LLM gateway — primary + fallback model routing
 │   ├── guardrails/         # NeMo Guardrails input/output filtering
 │   ├── ingestion/
-│   │   ├── chunking/       # Paragraph-based text splitter (1500 char max)
-│   │   └── loaders/        # Local parsers — PDF (pypdf), HTML, TXT, DOCX, PPTX
+│   │   ├── chunking/       # Section-aware paragraph splitter (1500 char max)
+│   │   ├── connectors/     # Auto-ingestion sources — local folder, S3, Confluence
+│   │   └── loaders/        # Local parsers — PDF (pypdf + OCR), HTML, TXT, DOCX, PPTX
 │   ├── services/retrieval/ # Jina AI embeddings + Qdrant search + Jina AI reranking
 │   ├── config.py           # Centralized environment variable management
 │   ├── main.py             # FastAPI entrypoint — guardrails gate + /query endpoint
 │   ├── security.py         # Bearer auth + rate limiting
+│   ├── pipeline.py         # Shared orchestration (guardrails ‖ planning → agent → guardrails)
+│   ├── acl.py              # Document-level access control
+│   ├── feedback.py         # Answer log + 👍/👎 feedback store
 │   ├── metrics.py          # Prometheus metrics
 │   └── observability.py    # Logfire + LangSmith tracing
+├── loadtest/               # Locust load test
 ├── evals/                  # RAGAS evaluation suite + Streamlit 3-tab demo
 ├── ui/                     # Streamlit chat interface with reasoning-step transparency
 ├── processed_data/         # Auto-generated — parsed & chunked JSON per document

@@ -2,6 +2,7 @@
 
 | Guide | Read it when you want to… |
 |---|---|
+| [PRODUCTION.md](PRODUCTION.md) | Access control, persistent memory, hybrid search, OCR, PII redaction, feedback, streaming, auto-ingestion and load testing — with measured results |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Understand the request flow, how True Data is separated from Noisy Data, and the design decisions |
 | [SETUP.md](SETUP.md) | Get keys, configure `.env`, and run locally or with Docker |
 | [CONFIGURATION.md](CONFIGURATION.md) | Look up any environment variable and its default |

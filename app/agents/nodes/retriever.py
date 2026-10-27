@@ -35,6 +35,7 @@ class RetrieverNode:
                 rerank_query=state.get("standalone_question") or state["question"],
                 top_n=self.settings.agent_max_context_chunks,
                 filters=state.get("filters"),
+                acl_groups=state.get("acl_groups"),
             )
         except Exception as exc:
             logger.exception("Retrieval failed for queries %r", queries)

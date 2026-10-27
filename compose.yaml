@@ -1,4 +1,4 @@
-# API + chat UI + Redis (shared rate limiting). Eval demo is opt-in: `docker compose --profile evals up`.
+# API + chat UI + Redis (shared rate limiting). Opt-in profiles: `evals` (eval demo), `ingest` (scheduled sync).
 #
 #   cp .env.example .env            # fill in PORTKEY_API_KEY, JINA_API_KEY, QDRANT_URL, QDRANT_API_KEY
 #   docker compose build
@@ -27,9 +27,23 @@ services:
     volumes:
       - ./DATA:/app/DATA:ro
       - ./processed_data:/app/processed_data
+      - ./state:/app/state            # conversation memory + feedback (SQLite)
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  ingestor:                           # scheduled auto-ingestion: `docker compose --profile ingest up -d`
+    profiles: ["ingest"]
+    image: enterprise-rag:latest
+    command: ["python", "-m", "app.ingestion.sync", "--every", "3600"]
+    env_file: .env
+    volumes:
+      - ./DATA:/app/DATA
+      - ./processed_data:/app/processed_data
+      - ./sources.yaml:/app/sources.yaml:ro
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   ui:

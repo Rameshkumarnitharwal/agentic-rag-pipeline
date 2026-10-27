@@ -31,6 +31,8 @@ class AgentState(TypedDict, total=False):
     question: str
     trace_id: str
     filters: dict[str, Any] | None
+    acl_groups: list[str] | None  # caller's groups; retrieval only sees chunks they may read
+    stream: bool  # responder streams tokens through the graph's stream writer
 
     # Plan computed before the graph ran (in parallel with the input guardrail); used on iteration 1
     precomputed_plan: dict[str, Any] | None

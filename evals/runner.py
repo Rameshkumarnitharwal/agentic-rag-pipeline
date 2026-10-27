@@ -144,7 +144,8 @@ class PipelineRunner:
         # Same orchestration as the /query endpoint, so latency and cost reflect production.
         outcome = await answer_question(
             row["question"], agent=self.agent, guardrails=self.guardrails, thread_id=thread_id,
-            trace_id=uuid.uuid4().hex, parallel_planning=self.settings.agent_parallel_planning,
+            trace_id=uuid.uuid4().hex, acl_groups=["*"],  # evals see every document
+            parallel_planning=self.settings.agent_parallel_planning,
         )
         if not outcome.input_check.allowed:
             result.blocked, result.blocked_stage, result.blocked_rail = True, "input", outcome.input_check.rail

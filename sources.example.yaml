@@ -1,0 +1,27 @@
+# Document sources for auto-ingestion (python -m app.ingestion.sync).
+# Copy to sources.yaml and edit. Each source is mirrored into DATA/<dataset>/<name>/.
+# Secrets are never written here: *_env fields name environment variables that hold them.
+
+sources:
+  - name: shared-docs              # a local or mounted folder (e.g. a network share)
+    type: local
+    path: /mnt/share/platform-docs
+    dataset: true_data
+
+  - name: s3-runbooks              # Amazon S3 or S3-compatible (MinIO: add endpoint_url)
+    type: s3
+    bucket: acme-runbooks
+    prefix: kubernetes/
+    region: ap-south-1
+    dataset: true_data
+    # Credentials: IAM role / AWS_* env vars by default, or name env vars explicitly:
+    # access_key_env: RUNBOOKS_AWS_ACCESS_KEY_ID
+    # secret_key_env: RUNBOOKS_AWS_SECRET_ACCESS_KEY
+
+  - name: eng-wiki                 # Confluence Cloud space (pages saved as HTML)
+    type: confluence
+    base_url: https://acme.atlassian.net/wiki
+    space: ENG
+    dataset: true_data
+    email_env: CONFLUENCE_EMAIL
+    token_env: CONFLUENCE_API_TOKEN

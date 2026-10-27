@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.acl import AclPolicy, load_acl_policy
 from app.ingestion.chunking import DEFAULT_MAX_CHARS, chunk_sections
 from app.ingestion.loaders import SUPPORTED_EXTENSIONS, load_document
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Sub-folder name -> dataset label stored on every chunk (used by retrieval filters and evals).
 DATASET_LABELS = {"true_data": "true", "noisy_data": "noisy"}
-SKIP_FILES = {"readme.txt", "readme.md"}
+SKIP_FILES = {"readme.txt", "readme.md", "acl.yaml"}
 
 
 def _file_sha256(path: Path) -> str:
@@ -52,7 +53,9 @@ def discover_files(data_dir: Path) -> list[Path]:
     )
 
 
-def process_file(path: Path, data_dir: Path, max_chars: int = DEFAULT_MAX_CHARS) -> dict[str, Any]:
+def process_file(
+    path: Path, data_dir: Path, max_chars: int = DEFAULT_MAX_CHARS, acl: AclPolicy | None = None
+) -> dict[str, Any]:
     """Parse and chunk one file; returns the JSON-serializable record written to processed_data/."""
     started = time.perf_counter()
     sections = load_document(path)
@@ -64,6 +67,7 @@ def process_file(path: Path, data_dir: Path, max_chars: int = DEFAULT_MAX_CHARS)
         "file_type": path.suffix.lower().lstrip("."),
         "dataset": _dataset_for(path, data_dir),
         "doc_id": file_hash[:32],
+        "allowed_groups": (acl or AclPolicy()).groups_for(relative),
     }
     title = next((s.metadata["title"] for s in sections if s.metadata.get("title")), None)
     if title:
@@ -91,6 +95,7 @@ def output_path_for(path: Path, data_dir: Path, out_dir: Path) -> Path:
 
 def run(data_dir: Path, out_dir: Path, max_chars: int = DEFAULT_MAX_CHARS, force: bool = False) -> dict[str, int]:
     files = discover_files(data_dir)
+    acl = load_acl_policy(data_dir / "acl.yaml")
     stats = {"processed": 0, "skipped": 0, "failed": 0, "empty": 0, "chunks": 0}
     logger.info("Found %d files under %s", len(files), data_dir)
 
@@ -98,14 +103,17 @@ def run(data_dir: Path, out_dir: Path, max_chars: int = DEFAULT_MAX_CHARS, force
         target = output_path_for(path, data_dir, out_dir)
         if not force and target.exists():
             try:
-                if json.loads(target.read_text())["sha256"] == _file_sha256(path):
+                existing = json.loads(target.read_text())
+                if existing["sha256"] == _file_sha256(path) and existing.get("allowed_groups") == acl.groups_for(
+                    path.relative_to(data_dir).as_posix()
+                ):
                     stats["skipped"] += 1
                     continue
             except (json.JSONDecodeError, KeyError):
                 pass
 
         try:
-            record = process_file(path, data_dir, max_chars)
+            record = process_file(path, data_dir, max_chars, acl)
         except Exception:
             logger.exception("[%d/%d] Failed to parse %s", i, len(files), path.name)
             stats["failed"] += 1
@@ -122,8 +130,22 @@ def run(data_dir: Path, out_dir: Path, max_chars: int = DEFAULT_MAX_CHARS, force
             i, len(files), path.name, record["num_chunks"], record["parse_seconds"],
         )
 
+    stats["pruned"] = prune_processed(data_dir, out_dir)
     logger.info("Done: %s", stats)
     return stats
+
+
+def prune_processed(data_dir: Path, out_dir: Path) -> int:
+    """Delete processed JSON whose source file no longer exists (document removed from DATA/)."""
+    removed = 0
+    for target in out_dir.rglob("*.json"):
+        relative = target.relative_to(out_dir)
+        source = data_dir / relative.parent / relative.name.removesuffix(".json")
+        if not source.exists():
+            target.unlink()
+            removed += 1
+            logger.info("Pruned %s (source document deleted)", relative)
+    return removed
 
 
 def main() -> None:

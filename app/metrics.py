@@ -44,3 +44,5 @@ QUERY_COST = Histogram(
     "LLM cost per /query request in USD",
     buckets=(0.0005, 0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1),
 )
+PII_REDACTIONS = Counter("rag_pii_redactions_total", "Answers with PII redacted, by entity type", ["entity"])
+FEEDBACK = Counter("rag_feedback_total", "User feedback on answers", ["rating"])  # rating: up|down

@@ -12,13 +12,13 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, Callable, Iterator, TypeVar
 
 from portkey_ai import Portkey
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings, get_settings
-from app.observability import annotate, traced
+from app.observability import annotate, span, traced
 
 from .usage import record_usage
 
@@ -188,6 +188,54 @@ class LLMGateway:
             latency_ms=latency_ms, total_tokens=usage.get("total_tokens"), portkey_trace_id=trace_id,
         )
         return LLMResponse(content=content, model=completion.model or "", usage=usage, latency_ms=latency_ms, trace_id=trace_id)
+
+    def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        trace_id: str | None = None,
+        metadata: dict[str, str] | None = None,
+        on_complete: Callable[[str], None] | None = None,
+    ) -> Iterator[str]:
+        """Stream a chat completion (default tier, so Portkey's fallback config applies) as text deltas.
+
+        Usage is recorded when the stream finishes. A failure before the first token raises
+        ``LLMGatewayError``; after that, the partial answer stands (it can't be un-sent).
+        """
+        trace_id = trace_id or uuid.uuid4().hex
+        client = self._client.with_options(trace_id=trace_id, metadata=metadata or {})
+        started = time.perf_counter()
+        model, usage, parts = "", None, []
+        with span("llm.chat_stream", node=(metadata or {}).get("node")):
+            try:
+                stream = client.chat.completions.create(
+                    model=self._default_model,
+                    messages=messages,
+                    temperature=self.settings.llm_temperature if temperature is None else temperature,
+                    max_tokens=max_tokens or self.settings.llm_max_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+            except Exception as exc:
+                raise LLMGatewayError(f"LLM call failed on all targets: {exc}") from exc
+            for chunk in stream:
+                model = getattr(chunk, "model", None) or model
+                if getattr(chunk, "usage", None):
+                    usage = chunk.usage
+                if chunk.choices and (delta := chunk.choices[0].delta.content):
+                    parts.append(delta)
+                    yield delta
+            prompt_tokens = (usage.prompt_tokens or 0) if usage else 0
+            completion_tokens = (usage.completion_tokens or 0) if usage else 0
+            if usage is None:
+                logger.debug("Streamed response had no usage block; tokens not counted")
+            record_usage(model, (metadata or {}).get("node"), prompt_tokens, completion_tokens)
+            if on_complete is not None:
+                on_complete(model)  # lets callers learn which model actually answered (after fallback)
+            annotate(ls_model_name=model, node=(metadata or {}).get("node"), total_tokens=prompt_tokens + completion_tokens,
+                     latency_ms=round((time.perf_counter() - started) * 1000, 1), streamed=True)
 
     @traced("llm.chat_json", process_inputs=lambda i: {"messages": i.get("messages"), "schema": i["schema"].__name__},
             process_outputs=lambda r: {"parsed": r[0].model_dump(), "model": r[1].model} if r else {})

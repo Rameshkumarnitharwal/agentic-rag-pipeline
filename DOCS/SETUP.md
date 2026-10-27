@@ -103,6 +103,15 @@ curl -s -X POST localhost:8000/query -H 'Content-Type: application/json' \
 Omit the `Authorization` header if `API_KEYS` is unset. Then run the evals
 (`python -m evals.run_evals`) to get a baseline. See [EVALUATION.md](EVALUATION.md).
 
+## Optional: access control, sources, memory
+
+- **Access control:** copy `DATA/acl.example.yaml` to `DATA/acl.yaml`, map paths to groups, and give
+  API keys groups (`API_KEYS="alice:hr|managers"`). See [PRODUCTION.md](PRODUCTION.md).
+- **Auto-ingestion:** copy `sources.example.yaml` to `sources.yaml` (local folder, S3, Confluence) and
+  run `python -m app.ingestion.sync` (add `--every 3600` to keep syncing).
+- **Memory:** conversations persist in `state/memory.sqlite` by default; set `MEMORY_BACKEND=postgres`
+  when running several API replicas.
+
 ## Adding your own documents
 
 Put files in `DATA/true_data/` or `DATA/noisy_data/` (sub-folders are fine; the label comes from a

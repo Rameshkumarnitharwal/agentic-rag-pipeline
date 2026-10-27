@@ -38,3 +38,12 @@ langchain-community==0.4.1  # ragas 0.4.3 imports a module removed in 0.4.2
 # Observability
 logfire[fastapi,httpx]==5.4.0
 langsmith==0.14.12
+
+# Production features
+langgraph-checkpoint-sqlite==3.1.2   # persistent conversation memory (MEMORY_BACKEND=sqlite)
+fastembed==0.9.1                     # BM25 sparse vectors for hybrid search
+rapidocr-onnxruntime==1.2.3          # OCR for scanned PDF pages
+pypdfium2==5.14.0                    # renders PDF pages for OCR
+pyyaml==6.0.3                        # ACL policy and sources.yaml
+boto3==1.43.119                      # S3 connector
+# Optional: langgraph-checkpoint-postgres + psycopg for MEMORY_BACKEND=postgres

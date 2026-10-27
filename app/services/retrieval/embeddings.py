@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 JINA_VECTOR = "jina"
 LOCAL_VECTOR = "local"
+SPARSE_VECTOR = "bm25"
 
 
 class Embedder(Protocol):
@@ -125,6 +126,33 @@ class LocalEmbedder:
 
     def embed_queries(self, texts: list[str]) -> list[list[float]]:
         return self._encode(texts, prompt=self._QUERY_PROMPT)
+
+
+class SparseEmbedder:
+    """BM25 term vectors computed locally with fastembed (no API calls). Qdrant applies IDF at query time."""
+
+    vector_name = SPARSE_VECTOR
+
+    def __init__(self, settings: Settings):
+        self.model_name = settings.sparse_model
+        self._model = None
+        self._lock = threading.Lock()
+
+    @property
+    def model(self):
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    from fastembed import SparseTextEmbedding
+
+                    self._model = SparseTextEmbedding(self.model_name)
+        return self._model
+
+    def embed_documents(self, texts: list[str]) -> list[tuple[list[int], list[float]]]:
+        return [(e.indices.tolist(), e.values.tolist()) for e in self.model.embed(texts)]
+
+    def embed_queries(self, texts: list[str]) -> list[tuple[list[int], list[float]]]:
+        return [(e.indices.tolist(), e.values.tolist()) for e in self.model.query_embed(texts)]
 
 
 class EmbeddingService:

@@ -25,9 +25,13 @@ RUN pip install -r requirements.txt
 # Bake the local fallback embedding model into the image so containers never download it at runtime
 # (that huggingface.co call can hang). Build with --build-arg PRELOAD_LOCAL_EMBEDDINGS=false to skip
 # it (~670 MB smaller) when LOCAL_EMBEDDINGS_ENABLED=false.
+# The BM25 model for hybrid search is small and always baked in; OCR models ship inside rapidocr.
 ARG PRELOAD_LOCAL_EMBEDDINGS=true
-ENV HF_HOME=/opt/hf
-RUN mkdir -p /opt/hf && if [ "$PRELOAD_LOCAL_EMBEDDINGS" = "true" ]; then \
+ENV HF_HOME=/opt/hf \
+    FASTEMBED_CACHE_PATH=/opt/fastembed
+RUN mkdir -p /opt/hf /opt/fastembed \
+    && python -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding('Qdrant/bm25')" \
+    && if [ "$PRELOAD_LOCAL_EMBEDDINGS" = "true" ]; then \
       python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('mixedbread-ai/mxbai-embed-large-v1')"; \
     fi
 
@@ -39,6 +43,7 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/opt/hf \
     HF_HUB_OFFLINE=1 \
+    FASTEMBED_CACHE_PATH=/opt/fastembed \
     TOKENIZERS_PARALLELISM=false \
     NEMO_GUARDRAILS_NO_USAGE_STATS=1
 
@@ -46,14 +51,16 @@ RUN useradd --create-home --uid 10001 app
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/hf /opt/hf
+COPY --from=builder /opt/fastembed /opt/fastembed
 
 WORKDIR /app
 COPY app/ app/
 COPY ui/ ui/
 COPY evals/ evals/
 
-# Writable paths for ingestion output, embedded Qdrant and eval results (mount volumes over them).
-RUN mkdir -p processed_data qdrant_local evals/results && chown -R app:app processed_data qdrant_local evals/results
+# Writable paths for ingestion output, embedded Qdrant, eval results and runtime state (conversation
+# memory + feedback SQLite). Mount volumes over them.
+RUN mkdir -p processed_data qdrant_local evals/results state && chown -R app:app processed_data qdrant_local evals/results state
 
 USER app
 EXPOSE 8000 8501
@@ -61,5 +68,6 @@ EXPOSE 8000 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
 
-# One worker: conversation memory is in-process. Scale with more containers + REDIS_URL for rate limits.
+# Conversation memory is SQLite on the state/ volume (one container). To run several replicas, use
+# MEMORY_BACKEND=postgres and REDIS_URL so memory and rate limits are shared.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

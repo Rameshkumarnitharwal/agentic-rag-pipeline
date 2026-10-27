@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,12 @@ from app.gateway import LLMGateway, LLMGatewayError
 from app.gateway.client import FAST
 
 logger = logging.getLogger(__name__)
+
+
+_CHITCHAT = re.compile(
+    r"^\s*(hi|hello|hey|thanks|thank you|thx|ok|okay|great|cool|good (morning|afternoon|evening)|bye)[\s!.]*$",
+    re.IGNORECASE,
+)
 
 
 class Plan(BaseModel):
@@ -37,6 +44,8 @@ class PlannerNode:
         """The planner's LLM call. Also used speculatively, in parallel with the input guardrail."""
         question = state["question"]
         tried = state.get("tried_queries", [])
+        if (fast := self._fast_path(question, state)) is not None:
+            return fast
         system = PLANNER_SYSTEM.format(
             topics=self.settings.guardrails_allowed_topics, max_queries=self.settings.agent_max_search_queries
         )
@@ -59,6 +68,17 @@ class PlannerNode:
             # Degrade gracefully: search with the raw question rather than failing the request.
             logger.warning("Planner failed, falling back to raw question: %s", exc)
             return Plan(standalone_question=question, needs_retrieval=True, search_queries=[question], reasoning="planner unavailable")
+
+    def _fast_path(self, question: str, state: AgentState) -> Plan | None:
+        """First turn with no history: nothing to rewrite, so skip the LLM and search with the question."""
+        if not self.settings.agent_planner_fast_path or state.get("history") or state.get("tried_queries"):
+            return None
+        if _CHITCHAT.match(question):
+            return Plan(standalone_question=question, needs_retrieval=False, reasoning="fast path: greeting/thanks")
+        if len(question.split()) > self.settings.agent_fast_path_max_words:
+            return None
+        return Plan(standalone_question=question, needs_retrieval=True, search_queries=[question],
+                    reasoning="fast path: first turn, question used as the search query")
 
     def __call__(self, state: AgentState) -> AgentState:
         started = time.perf_counter()

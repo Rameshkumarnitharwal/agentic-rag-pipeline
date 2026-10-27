@@ -6,6 +6,7 @@ Env:  RAG_API_URL (default http://localhost:8000), RAG_API_KEY (bearer token, if
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from typing import Any
@@ -68,6 +69,63 @@ def _detail(response: httpx.Response) -> str:
         return response.text[:200]
 
 
+def api_query_stream(
+    api_url: str, api_key: str, question: str, thread_id: str, filters: dict | None, outcome: dict[str, Any]
+):
+    """Yield answer text from POST /query/stream as it arrives; fills ``outcome`` with the final
+    ``done`` payload, an ``error`` message, or ``retracted=True`` when the output guardrail rejected it."""
+    payload: dict[str, Any] = {"question": question, "thread_id": thread_id}
+    if filters:
+        payload["filters"] = filters
+    try:
+        with httpx.stream("POST", f"{api_url}/query/stream", json=payload, headers=_headers(api_key),
+                          timeout=REQUEST_TIMEOUT) as response:
+            if response.status_code != 200:
+                response.read()
+                outcome["error"] = _error_message(response)
+                return
+            event = None
+            for line in response.iter_lines():
+                if line.startswith("event: "):
+                    event = line[7:]
+                elif line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    if event == "token":
+                        yield data["text"]
+                    elif event == "retract":
+                        outcome["retracted"] = True
+                    elif event == "done":
+                        outcome["done"] = data
+                    elif event == "error":
+                        outcome["error"] = f"Service error ({data.get('status')}): {data.get('detail')}"
+    except httpx.TimeoutException:
+        outcome["error"] = "The request timed out. The service may be under load; please try again."
+    except httpx.HTTPError as exc:
+        outcome["error"] = f"Could not reach the API at {api_url} ({type(exc).__name__})."
+
+
+def _error_message(response: httpx.Response) -> str:
+    detail = _detail(response)
+    if response.status_code == 401:
+        return "Authentication failed: check the API key in the sidebar."
+    if response.status_code == 429:
+        return f"Rate limit reached. Try again in {response.headers.get('Retry-After', 'a few')} seconds."
+    if response.status_code in (502, 503):
+        return f"Service temporarily unavailable: {detail}"
+    return f"Request failed ({response.status_code}): {detail}"
+
+
+def api_feedback(api_url: str, api_key: str, trace_id: str, rating: str, comment: str | None = None) -> bool:
+    try:
+        response = httpx.post(
+            f"{api_url}/feedback", json={"trace_id": trace_id, "rating": rating, "comment": comment},
+            headers=_headers(api_key), timeout=10,
+        )
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 204
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def api_ready(api_url: str) -> tuple[bool, str]:
     try:
@@ -126,6 +184,27 @@ def render_assistant(message: dict[str, Any], show_steps: bool) -> None:
     render_citations(message.get("citations", []))
     if show_steps:
         render_steps(message.get("steps", []), message.get("latency_ms"), message.get("model"))
+    if message.get("trace_id") and not message.get("blocked"):
+        render_feedback(message["trace_id"])
+
+
+def _on_feedback(trace_id: str) -> None:
+    value = st.session_state.get(f"fb_{trace_id}")
+    if value is None:
+        return
+    ok = api_feedback(st.session_state.api_url, st.session_state.api_key, trace_id, "up" if value == 1 else "down")
+    st.session_state[f"fb_status_{trace_id}"] = "Thanks for the feedback!" if ok else "Couldn't send feedback."
+
+
+def render_feedback(trace_id: str) -> None:
+    st.feedback("thumbs", key=f"fb_{trace_id}", on_change=_on_feedback, args=(trace_id,))
+    if status_text := st.session_state.get(f"fb_status_{trace_id}"):
+        st.caption(status_text)
+
+
+def _chain(first: str, rest):
+    yield first
+    yield from rest
 
 
 # ---------- Session state ----------
@@ -147,12 +226,14 @@ with st.sidebar:
     st.header("Settings")
     api_url = st.text_input("API URL", value=DEFAULT_API_URL).rstrip("/")
     api_key = st.text_input("API key", value=DEFAULT_API_KEY, type="password", help="Leave empty if the API has no auth")
+    st.session_state.api_url, st.session_state.api_key = api_url, api_key
     ok, status_text = api_ready(api_url)
     st.badge(status_text, icon=":material/check_circle:" if ok else ":material/error:", color="green" if ok else "red")
 
     st.divider()
     scope = st.segmented_control("Search scope", list(DATASET_FILTERS), default="All documents")
     show_steps = st.toggle("Show reasoning steps", value=True)
+    use_streaming = st.toggle("Stream answers", value=True, help="Show the answer as it is generated (/query/stream)")
     st.button("New conversation", icon=":material/add_comment:", on_click=new_conversation, width="stretch")
     st.caption(f"Conversation `{st.session_state.thread_id[:8]}`")
 
@@ -173,9 +254,22 @@ if question := st.chat_input("Ask a question about the documentation"):
     with st.chat_message("user"):
         st.markdown(question)
 
+    filters = DATASET_FILTERS[scope or "All documents"]
     with st.chat_message("assistant"):
-        with st.spinner("Checking guardrails, planning, searching and answering…"):
-            result = api_query(api_url, api_key, question, st.session_state.thread_id, DATASET_FILTERS[scope or "All documents"])
+        if use_streaming:
+            outcome: dict[str, Any] = {}
+            live = st.empty()
+            with live.container():
+                with st.spinner("Checking guardrails, planning and searching…"):
+                    tokens = api_query_stream(api_url, api_key, question, st.session_state.thread_id, filters, outcome)
+                    first = next(tokens, None)  # wait for the first token under the spinner
+                if first is not None:
+                    st.write_stream(_chain(first, tokens))
+            live.empty()  # replaced by the final rendering (which also handles a retracted answer)
+            result = outcome.get("done") or {"error": outcome.get("error", "The stream ended without an answer.")}
+        else:
+            with st.spinner("Checking guardrails, planning, searching and answering…"):
+                result = api_query(api_url, api_key, question, st.session_state.thread_id, filters)
         if "error" in result:
             message = {"role": "assistant", "content": "", "error": result["error"]}
         else:

@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Protocol
 
 from fastapi import HTTPException, Request, status
@@ -17,14 +18,19 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def authenticate(request: Request, settings: Settings) -> str:
-    """Return a stable principal id for the caller; raise 401 if auth is enabled and the token is wrong.
+@dataclass(frozen=True)
+class Principal:
+    id: str  # hash of the API key (never the key itself), or "ip:<addr>" when auth is off
+    groups: tuple[str, ...]  # ACL groups this caller may read
 
-    The principal is a hash of the API key (never the key itself) or ``ip:<addr>`` when auth is off.
-    """
-    keys = settings.api_key_list
+
+def authenticate(request: Request, settings: Settings) -> Principal:
+    """Identify the caller; raise 401 if auth is enabled and the token is wrong."""
+    key_groups = settings.api_key_groups
+    keys = list(key_groups)
     if not keys:
-        return f"ip:{request.client.host if request.client else 'unknown'}"
+        host = request.client.host if request.client else "unknown"
+        return Principal(id=f"ip:{host}", groups=tuple(settings.acl_default_user_groups))
 
     header = request.headers.get("Authorization", "")
     scheme, _, token = header.partition(" ")
@@ -33,12 +39,13 @@ def authenticate(request: Request, settings: Settings) -> str:
             status.HTTP_401_UNAUTHORIZED, "Missing bearer token", headers={"WWW-Authenticate": "Bearer"}
         )
     # Compare against every key so timing doesn't reveal which/how many keys exist.
-    matched = False
+    matched: str | None = None
     for key in keys:
-        matched |= hmac.compare_digest(token.encode(), key.encode())
-    if not matched:
+        if hmac.compare_digest(token.encode(), key.encode()):
+            matched = key
+    if matched is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key", headers={"WWW-Authenticate": "Bearer"})
-    return "key:" + hashlib.sha256(token.encode()).hexdigest()[:16]
+    return Principal(id="key:" + hashlib.sha256(token.encode()).hexdigest()[:16], groups=tuple(key_groups[matched]))
 
 
 class RateLimiter(Protocol):

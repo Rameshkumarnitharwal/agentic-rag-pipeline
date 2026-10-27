@@ -10,7 +10,7 @@ from typing import Any
 from app.config import Settings, get_settings
 from app.observability import annotate, span, traced
 
-from .embeddings import EmbeddingService
+from .embeddings import EmbeddingService, SparseEmbedder
 from .reranker import JinaReranker
 from .vector_store import QdrantStore
 
@@ -34,6 +34,7 @@ class RetrievalResult:
     reranked: bool
     candidates: int  # hits returned by vector search
     filtered_out: int  # reranked hits dropped by the relevance threshold
+    hybrid: bool = False  # dense + BM25 fused, or dense only
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 
@@ -67,6 +68,26 @@ class Retriever:
         if reranker is None and self.settings.jina_api_key is not None:
             reranker = JinaReranker(self.settings)
         self.reranker = reranker
+        self.sparse = SparseEmbedder(self.settings) if self.settings.hybrid_search_enabled else None
+        self._hybrid_ready: bool | None = None  # checked lazily: does the collection have BM25 vectors?
+
+    def _sparse_queries(self, queries: list[str]) -> list | None:
+        if self.sparse is None:
+            return None
+        if self._hybrid_ready is None:
+            try:
+                self._hybrid_ready = self.store.has_sparse()
+            except Exception:
+                self._hybrid_ready = False
+            if not self._hybrid_ready:
+                logger.warning("Collection has no BM25 vectors yet; using dense-only search (run the indexer)")
+        if not self._hybrid_ready:
+            return None
+        try:
+            return self.sparse.embed_queries(queries)
+        except Exception as exc:
+            logger.warning("BM25 query embedding failed, using dense-only search: %s", exc)
+            return None
 
     def retrieve(
         self,
@@ -75,8 +96,11 @@ class Retriever:
         top_n: int | None = None,
         min_score: float | None = None,
         filters: dict[str, Any] | None = None,
+        acl_groups: list[str] | None = None,
     ) -> RetrievalResult:
-        return self.retrieve_many([query], top_k=top_k, top_n=top_n, min_score=min_score, filters=filters)
+        return self.retrieve_many(
+            [query], top_k=top_k, top_n=top_n, min_score=min_score, filters=filters, acl_groups=acl_groups
+        )
 
     @traced("retrieval", run_type="retriever", process_outputs=_retrieval_outputs)
     def retrieve_many(
@@ -87,8 +111,12 @@ class Retriever:
         top_n: int | None = None,
         min_score: float | None = None,
         filters: dict[str, Any] | None = None,
+        acl_groups: list[str] | None = None,
     ) -> RetrievalResult:
-        """Retrieve for several queries with a fixed number of round trips: one embedding call for all
+        """``acl_groups``: only chunks readable by these groups are returned (``*`` = unrestricted;
+        ``None`` = no ACL filter, for internal tools only).
+
+        Retrieve for several queries with a fixed number of round trips: one embedding call for all
         queries, one batched vector search, then a single rerank of the merged candidates against
         ``rerank_query`` (default: the first query) — instead of embed/search/rerank per query.
         """
@@ -106,9 +134,12 @@ class Retriever:
                 s.set_attribute("provider", vector_name)
         timings["embed"] = _ms(started)
 
+        sparse = self._sparse_queries(queries)
         started = time.perf_counter()
-        with span("retrieval.search", top_k=top_k, queries=len(queries), filters=str(filters or {})):
-            hit_lists = self.store.search_batch(vector_name, vectors, limit=top_k, filters=filters)
+        with span("retrieval.search", top_k=top_k, queries=len(queries), hybrid=sparse is not None, filters=str(filters or {})):
+            hit_lists = self.store.search_batch(
+                vector_name, vectors, limit=top_k, filters=filters, acl_groups=acl_groups, sparse=sparse
+            )
         timings["search"] = _ms(started)
 
         # Merge: a chunk found by several queries keeps its best vector score.
@@ -130,7 +161,8 @@ class Retriever:
             chunks = kept
 
         annotate(
-            embedding_provider=vector_name, reranked=reranked, queries=len(queries), candidates=len(candidates),
+            embedding_provider=vector_name, hybrid=sparse is not None, reranked=reranked, queries=len(queries),
+            candidates=len(candidates),
             kept=len(chunks), filtered_out=filtered_out,
             noisy_kept=sum(1 for c in chunks if c.metadata.get("dataset") == "noisy"),
         )
@@ -143,6 +175,7 @@ class Retriever:
             chunks=chunks,
             embedding_provider=vector_name,
             reranked=reranked,
+            hybrid=sparse is not None,
             candidates=len(candidates),
             filtered_out=filtered_out,
             timings_ms=timings,

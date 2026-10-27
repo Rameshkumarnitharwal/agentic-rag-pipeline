@@ -131,9 +131,23 @@ Every chunk (in `processed_data/*.json` and as a Qdrant payload) carries:
 | `title` | document title, when available |
 | `chunk_index`, `char_count` | position and size |
 | `content_type` | `text` or `table` |
+| `allowed_groups` | ACL groups that may read the chunk (`["public"]` by default; see `DATA/acl.yaml`) |
+| `ocr` (on the page section) | `true` when the page's text came from OCR |
 
-Qdrant has keyword indexes on `dataset`, `source`, `doc_id`, `file_type` and `content_type`, so
-any of them can be used in `/query` `filters`.
+Each point stores three vectors: `jina` (dense, primary), `local` (dense, fallback) and `bm25`
+(sparse, for hybrid search).
+
+Qdrant has keyword indexes on `dataset`, `source`, `doc_id`, `file_type`, `content_type` and
+`allowed_groups`; all but `allowed_groups` can be used in `/query` `filters` (access control comes only
+from the API key).
+
+## Production features
+
+Access control, persistent memory, hybrid search, OCR, PII redaction, the feedback loop, streaming,
+auto-ingestion and load testing are described, with measured results, in
+[PRODUCTION.md](PRODUCTION.md). In the request flow above they sit at: retrieval (ACL filter, hybrid
+BM25 + dense with RRF), responder (PII redaction, token streaming), the agent's checkpointer
+(SQLite/Postgres memory) and after the response (answer log for feedback).
 
 ## Correlation IDs
 

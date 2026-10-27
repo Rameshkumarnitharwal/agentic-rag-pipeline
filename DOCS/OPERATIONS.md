@@ -29,6 +29,16 @@ does not remove orphans, so delete its points in Qdrant by `source`, e.g. with q
 **Changing the embedding model or dimension:** create a new collection (`QDRANT_COLLECTION`),
 re-index with `--force`, then switch the API over. Existing collections keep their vector size.
 
+**Automatic sync:** `python -m app.ingestion.sync` mirrors the sources in `sources.yaml` and
+re-indexes only what changed, pruning documents deleted at the source (see PRODUCTION.md §8). Run it
+on a schedule with `--every 3600` or the compose `ingest` profile.
+
+**Hybrid-search migration** (collections created before BM25 support):
+`python -m app.services.retrieval.migrate --to <new_collection>`, then point `QDRANT_COLLECTION` at it.
+
+**Feedback review:** `python -m evals.feedback_export --since-days 7` writes 👎 answers to
+`evals/feedback_candidates.jsonl`; add a reference answer to each and append them to the dataset.
+
 ## Tuning
 
 | Symptom (from evals or users) | Setting to adjust |
@@ -59,6 +69,8 @@ Exposed at `GET /metrics`:
 | `rag_llm_tokens_total` | counter | `model`, `kind`: prompt, completion | LLM tokens used by `/query` |
 | `rag_llm_cost_usd_total` | counter | — | LLM cost in USD (priced with `LLM_PRICES`) |
 | `rag_query_cost_usd` | histogram | — | LLM cost per `/query` request |
+| `rag_pii_redactions_total` | counter | `entity` | Answers with PII redacted |
+| `rag_feedback_total` | counter | `rating`: up, down | User feedback |
 
 Suggested alerts:
 
@@ -106,13 +118,16 @@ your data before enabling tracing.
 | `ModuleNotFoundError: langchain_community.chat_models.vertexai` | `langchain-community` upgraded past 0.4.1 | Reinstall from `requirements.txt` (RAGAS 0.4.3 needs ≤ 0.4.1) |
 | A PDF yields no chunks | Scanned PDF with no text layer (no OCR by design) | Use a text-based PDF, or add OCR as a separate pre-processing step |
 
+## Load testing
+
+`loadtest/locustfile.py` (see PRODUCTION.md §9). Measured with 5 concurrent users on a laptop: 0 failures;
+`/query` p50 10.0 s / p95 17 s. Re-run from the deployment region before quoting capacity.
+
 ## Scaling and limits
 
-- **API workers:** run one worker per container. Conversation memory lives in process, so
-  multiple workers in one container would split a user's history. Scale by running more
-  containers behind a load balancer with **sticky sessions** (by API key) if follow-ups matter.
-  For full horizontal scaling, swap `InMemorySaver` for a Redis or Postgres LangGraph
-  checkpointer in `app/agents/graph.py`.
+- **API workers and replicas:** conversation memory is SQLite (`state/`) by default, shared by the
+  workers of one container. For several replicas set `MEMORY_BACKEND=postgres` so every replica sees
+  the same conversations, and `REDIS_URL` for shared rate limits.
 - **Rate limits:** set `REDIS_URL` so all containers share one limit. Without it, each process
   enforces its own.
 - **Cost per question:** about 4 LLM calls (input guardrail and planner on `LLM_FAST_MODEL`,

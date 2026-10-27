@@ -13,7 +13,12 @@ __pycache__/
 # Documents and generated artifacts (not redistributed; see DATA/README.md)
 DATA/*
 !DATA/README.md
+!DATA/acl.example.yaml
+sources.yaml
 processed_data/
 qdrant_local/
 evals/results/
 *.log
+
+# Runtime state (conversation memory, feedback)
+state/

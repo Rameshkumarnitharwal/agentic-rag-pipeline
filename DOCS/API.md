@@ -82,6 +82,42 @@ Runs input guardrails → agent → output guardrails synchronously and returns 
 | 503 | Service not initialised (see `/ready`), or guardrail checks couldn't run (LLM outage, fail-closed) | Retry later |
 | 500 | Unexpected error, logged with the `trace_id` | Report the `trace_id` |
 
+## `POST /query/stream`
+
+Same request body as `/query`. Returns server-sent events (`text/event-stream`):
+
+| Event | Data |
+|---|---|
+| `start` | `{"trace_id", "thread_id"}` |
+| `step` | one pipeline stage as it completes (`node`, `summary`, `detail`, `latency_ms`) |
+| `token` | `{"text"}` — the next piece of the answer (a sentence or line, already PII-redacted) |
+| `retract` | `{"message"}` — the output guardrail rejected the streamed answer; replace it with this |
+| `done` | the same JSON as `/query`'s response |
+| `error` | `{"status", "detail"}` — e.g. 502 when all LLM targets fail (headers were already sent) |
+
+```bash
+curl -N -X POST localhost:8000/query/stream -H 'Content-Type: application/json' \
+  -d '{"question": "How do I schedule a CronJob every 5 minutes?"}'
+```
+
+Errors before streaming starts (401, 422, 429, 503 not initialised) are normal HTTP errors.
+
+## `POST /feedback`
+
+```json
+{"trace_id": "9b1e...", "rating": "down", "comment": "missed the cron syntax"}
+```
+
+`204` on success. `404` if the trace is unknown **or belongs to another caller** (same response, so
+answer ids can't be probed). `rating` is `up` or `down`. Ratings are stored with the answer and exported
+for the golden dataset (`python -m evals.feedback_export`).
+
+## Access control
+
+API keys can carry groups: `API_KEYS="alice:hr|managers,bob"`. Retrieval only returns chunks whose
+`allowed_groups` (from `DATA/acl.yaml`) include one of the caller's groups or `public`. Sending
+`allowed_groups` in `filters` is rejected with 422. See [PRODUCTION.md](PRODUCTION.md#1-access-control-document-level-acl).
+
 ## `GET /health`
 
 Liveness: `{"status": "ok"}` whenever the process is up.
